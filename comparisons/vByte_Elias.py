@@ -5,7 +5,10 @@ Compares vByte and Elias Gamma compression on Shakespeare text
 using fixed-size chunking.
 """
 
-from utils.posting_list import text_to_posting_list
+import os
+from pathlib import Path
+from utils.data_extraction import extract_newsgroups
+from utils.posting_list import text_to_posting_list, documents_to_posting_list
 from compression.vByte import VByteEncoder, VByteDecoder
 from compression.elias import EliasGammaEncoder, EliasGammaDecoder
 from chunk.fixedChunk import ChunkedPostingList
@@ -47,17 +50,28 @@ def print_compression_results(name, original_size, compressed_size, chunk_size):
     return ratio
 
 
-def vByteEliasComparison():
-    # Read the Shakespeare text
-    print("Reading Shakespeare text...")
+def load_shakespeare():
     with open("data/t8.shakespeare.txt", "r", encoding="utf-8") as f:
         text = f.read()
-
-    # Convert to posting list
-    print("Converting to posting list...")
     posting_list = text_to_posting_list(text, doc_id=1)
+    return text, posting_list
 
-    # Calculate statistics
+def load_newsgroups():
+    extract_newsgroups()
+    root = Path("data") / "6_newsgroups"
+    documents = []
+
+    for file_path in sorted(root.rglob("*")):
+        if file_path.is_file():
+            if file_path.name == ".DS_Store":
+                continue
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                documents.append(f.read())
+
+    posting_list = documents_to_posting_list(documents)
+    return documents, posting_list
+
+def evaluate_dataset(name, posting_list, text_size, word_count):
     total_positions = sum(
         len(positions)
         for doc_pos in posting_list.values()
@@ -66,13 +80,12 @@ def vByteEliasComparison():
     original_bytes = calculate_posting_list_size(posting_list)
 
     print("\n" + "=" * 70)
-    print("Shakespeare Compression Comparison")
+    print(f"{name} Compression Comparison")
     print("=" * 70)
-    print(f"Text size: {len(text)} characters")
-    print(f"Words: {len(text.split())}")
+    print(f"Text size: {text_size} characters")
+    print(f"Words: {word_count}")
     print(f"Unique terms: {len(posting_list)}")
     print(f"Total positions: {total_positions}")
-    print(f"Original posting list size: {original_bytes:,} bytes")
 
     # Define chunk sizes to test
     chunk_sizes = [50, 100, 200, 500]
@@ -144,3 +157,20 @@ def vByteEliasComparison():
     print("✓ All compressions verified and compared!")
     print("=" * 70)
 
+def run_shakespeare_comparison():
+    text, posting_list = load_shakespeare()
+    evaluate_dataset("Shakespeare", posting_list, len(text), len(text.split()))
+
+def run_newsgroups_comparison():
+    documents, posting_list = load_newsgroups()
+    evaluate_dataset(
+        "Newsgroups",
+        posting_list,
+        sum(len(doc) for doc in documents),
+        sum(len(doc.split()) for doc in documents),
+    )
+
+
+def vByteEliasComparison():
+    run_shakespeare_comparison()
+    run_newsgroups_comparison()
