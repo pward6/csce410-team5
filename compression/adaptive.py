@@ -23,6 +23,16 @@ SEQUENCE_ENCODERS: Dict[AlgorithmName, Callable[[List[int]], bytes]] = {
 }
 
 
+def positions_to_gaps(positions: List[int]) -> List[int]:
+    if not positions:
+        return []
+
+    gaps = [positions[0]]
+    for index in range(1, len(positions)):
+        gaps.append(positions[index] - positions[index - 1])
+    return gaps
+
+
 def choose_best_algorithm(gaps: List[int]) -> AlgorithmName:
     """Choose the smallest compressor by actual encoded size on the raw gap sequence."""
     if not gaps:
@@ -34,6 +44,13 @@ def choose_best_algorithm(gaps: List[int]) -> AlgorithmName:
     }
 
     return min(sizes, key=sizes.get)
+
+
+def best_encoded_size(gaps: List[int]) -> int:
+    """Return the compressed size of the best algorithm for this gap sequence."""
+    if not gaps:
+        return 0
+    return min(len(encode_sequence(gaps)) for encode_sequence in SEQUENCE_ENCODERS.values())
 
 
 class AdaptiveChunker:
@@ -56,43 +73,51 @@ class AdaptiveChunker:
         self.large_gap_factor = large_gap_factor
 
     def chunk_positions(self, positions: List[int]) -> List[List[int]]:
-        """Split a sorted posting list into adaptive chunks."""
+        """Split a sorted posting list into adaptive chunks using gap heuristics."""
         if not positions:
             return []
 
         chunks: List[List[int]] = []
         current_chunk: List[int] = [positions[0]]
         current_gaps: List[int] = []
+        gap_sum = 0
+        small_gap_count = 0
         last_position = positions[0]
 
         for position in positions[1:]:
             gap = position - last_position
-            if len(current_chunk) + 1 > self.max_chunk_size or self._should_split(current_gaps, gap):
+            split = False
+
+            if len(current_chunk) >= self.max_chunk_size:
+                split = True
+            elif len(current_gaps) >= self.min_chunk_size:
+                average_gap = gap_sum / len(current_gaps)
+                small_ratio = small_gap_count / len(current_gaps)
+
+                if gap > self.large_gap_threshold and small_ratio >= self.small_gap_ratio_threshold:
+                    split = True
+                elif average_gap > 0 and gap / average_gap >= self.large_gap_factor:
+                    split = True
+
+            if split:
                 chunks.append(current_chunk)
                 current_chunk = [position]
                 current_gaps = []
+                gap_sum = 0
+                small_gap_count = 0
             else:
                 current_chunk.append(position)
                 current_gaps.append(gap)
+                gap_sum += gap
+                if gap <= self.small_gap_limit:
+                    small_gap_count += 1
+
             last_position = position
 
         if current_chunk:
             chunks.append(current_chunk)
 
         return chunks
-
-    def _should_split(self, current_gaps: List[int], next_gap: int) -> bool:
-        if len(current_gaps) < self.min_chunk_size:
-            return False
-
-        if next_gap > self.large_gap_threshold and self._small_gap_ratio(current_gaps) >= self.small_gap_ratio_threshold:
-            return True
-
-        average_gap = sum(current_gaps) / len(current_gaps)
-        if average_gap > 0 and next_gap / average_gap >= self.large_gap_factor:
-            return True
-
-        return False
 
     def _small_gap_ratio(self, gaps: List[int]) -> float:
         if not gaps:
@@ -121,7 +146,7 @@ class AdaptivePostingListCompressor:
         return compressed
 
     def _compress_chunk(self, positions: List[int]) -> ChunkMetadata:
-        gaps = self._positions_to_gaps(positions)
+        gaps = positions_to_gaps(positions)
         best_algorithm = choose_best_algorithm(gaps)
         encode, _ = COMPRESSORS[best_algorithm]
         return {
@@ -129,14 +154,6 @@ class AdaptivePostingListCompressor:
             "data": encode(positions),
         }
 
-    @staticmethod
-    def _positions_to_gaps(positions: List[int]) -> List[int]:
-        if not positions:
-            return []
-        gaps = [positions[0]]
-        for index in range(1, len(positions)):
-            gaps.append(positions[index] - positions[index - 1])
-        return gaps
 
     def decompress_posting_list(self, compressed_list: dict) -> dict:
         decompressed: dict = {}
